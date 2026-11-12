@@ -1,0 +1,81 @@
+# Block Source broker on Adobe App Builder (I/O Runtime).
+# Secrets come from .env (see .env.example) and are injected as default action inputs.
+application:
+  # Static hosting for the plugin itself: https://{namespace}.adobeio-static.net/block-source.html
+  web:
+    src: web-src
+    response-headers:
+      /*:
+        Cache-Control: no-cache
+      /*.js:
+        Access-Control-Allow-Origin: '*'
+        Cache-Control: no-cache
+  hooks:
+    build-static: hooks/build-static.js
+  runtimeManifest:
+    packages:
+      block-source:
+        license: Apache-2.0
+        actions:
+          api:
+            function: actions/api/index.js
+            runtime: nodejs:22
+            web: 'raw'
+            inputs:
+              LOG_LEVEL: info
+              ENCRYPTION_KEY: $BLOCKSOURCE_ENCRYPTION_KEY
+              DA_ADMIN_URL: https://admin.da.live
+              IMS_URL: https://ims-na1.adobelogin.com
+              RATE_LIMIT_PER_MINUTE: 60
+              MAX_BRANCHES: 100
+              BRANCH_ACTIVITY_DAYS: 90
+            annotations:
+              require-adobe-auth: false
+              web-custom-options: true
+              final: true
+            limits:
+              timeout: 60000
+              memorySize: 256
+          compare-index:
+            function: actions/compare-index/index.js
+            runtime: nodejs:22
+            web: 'no'
+            inputs:
+              LOG_LEVEL: info
+              ENCRYPTION_KEY: $BLOCKSOURCE_ENCRYPTION_KEY
+              MAX_BRANCHES: 100
+              BRANCH_ACTIVITY_DAYS: 90
+            limits:
+              timeout: 300000
+              memorySize: 256
+          usage-scan:
+            function: actions/usage-scan/index.js
+            runtime: nodejs:22
+            web: 'no'
+            inputs:
+              LOG_LEVEL: info
+              ENCRYPTION_KEY: $BLOCKSOURCE_ENCRYPTION_KEY
+              DA_ADMIN_URL: https://admin.da.live
+              IMS_URL: https://ims-na1.adobelogin.com
+              IMS_CLIENT_ID: $BLOCKSOURCE_IMS_CLIENT_ID
+              IMS_CLIENT_SECRET: $BLOCKSOURCE_IMS_CLIENT_SECRET
+              IMS_SCOPES: $BLOCKSOURCE_IMS_SCOPES
+            limits:
+              timeout: 600000
+              memorySize: 512
+        triggers:
+          everyTenMinutes:
+            feed: /whisk.system/alarms/interval
+            inputs:
+              minutes: 10
+          nightly:
+            feed: /whisk.system/alarms/alarm
+            inputs:
+              cron: '0 3 * * *'
+        rules:
+          compareIndexRule:
+            trigger: everyTenMinutes
+            action: compare-index
+          usageScanRule:
+            trigger: nightly
+            action: usage-scan

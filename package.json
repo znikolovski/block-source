@@ -1,0 +1,16 @@
+{
+  "name": "block-source",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Block Source: block history, newer versions and safe preview for Experience Workspace.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:plugin && npm run test:broker",
+    "test:plugin": "node --test plugin/test/*.test.js",
+    "test:broker": "npm --prefix broker test"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

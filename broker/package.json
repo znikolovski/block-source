@@ -1,0 +1,18 @@
+{
+  "name": "block-source-broker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Block Source broker: the trust boundary between the Experience Workspace plugin and GitHub.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "deploy": "aio app deploy"
+  },
+  "dependencies": {
+    "@adobe/aio-lib-files": "^4.1.4",
+    "@adobe/aio-lib-state": "^5.4.0"
+  }
+}
