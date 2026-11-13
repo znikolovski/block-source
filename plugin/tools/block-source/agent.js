@@ -267,25 +267,22 @@ export function readyAnnouncement(own = canvasSite()) {
   } : null;
 }
 
+function currentTab() {
+  try {
+    return window.sessionStorage.getItem(TAB_KEY);
+  } catch {
+    return null;
+  }
+}
+
 function joinChannel() {
   const channel = new BroadcastChannel(CHANNEL);
   channel.onmessage = async ({ data }) => {
-    let tab = null;
-    try {
-      tab = window.sessionStorage.getItem(TAB_KEY);
-    } catch {
-      // storage blocked
-    }
-    if (!data || !data.tab || data.tab !== tab) return;
+    if (!data || !data.tab || data.tab !== currentTab()) return;
     const reply = await handle(data);
     if (reply) channel.postMessage(reply);
   };
-  let tab = null;
-  try {
-    tab = window.sessionStorage.getItem(TAB_KEY);
-  } catch {
-    // storage blocked
-  }
+  const tab = currentTab();
   const ready = readyAnnouncement();
   if (ready && tab) channel.postMessage({ ...ready, tab });
 }
@@ -307,7 +304,13 @@ function openBridge() {
     const reply = await handle(e.data);
     if (reply) frame.contentWindow.postMessage(reply, OWN_URL.origin);
   });
-  (document.body || document.documentElement).append(frame);
+  // Quick edit in Experience Workspace rewrites the body on every sync, so the bridge lives outside
+  // it and is put back if anything still removes it. A re-attached bridge reloads and says ready again.
+  const attach = () => {
+    if (!frame.isConnected) document.documentElement.append(frame);
+  };
+  attach();
+  new MutationObserver(attach).observe(document.documentElement, { childList: true });
 }
 
 if (window.top !== window && !window.blockSourceAgentStarted) {

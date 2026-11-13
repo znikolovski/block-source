@@ -68,7 +68,7 @@ The broker validates a token before saving it, and an invalid token never replac
 
 ### How the plugin reaches the canvas
 
-Experience Workspace puts the canvas and the plugin in shadow DOM, so neither can find the other's window. The agent opens a hidden `bridge.html` from the plugin's own origin inside the canvas. The plugin and the bridge share a `BroadcastChannel`, which the browser limits to frames of that origin under the same top-level page. Every message carries a per-tab ID from `sessionStorage`, so another Experience Workspace tab is never driven. The agent accepts messages only from its bridge frame, and only for the site and org in its own hostname.
+Experience Workspace puts the canvas and the plugin in shadow DOM, so neither can find the other's window. The agent opens a hidden `bridge.html` from the plugin's own origin inside the canvas. Quick edit rewrites the canvas body on every sync, so the bridge is attached to `<html>` rather than `<body>`, and the agent puts it back if it is removed. The plugin and the bridge share a `BroadcastChannel`, which the browser limits to frames of that origin under the same top-level page. Every message carries a per-tab ID from `sessionStorage`, so another Experience Workspace tab is never driven. The agent accepts messages only from its bridge frame, and only for the site and org in its own hostname.
 
 ## Block documentation conventions
 
