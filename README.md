@@ -2,6 +2,8 @@
 
 Block Source is a panel for [Experience Workspace](https://da.live) (DA) that tells authors about the block they are working on. Select a block in the document and the panel shows where its code came from, whether there is a newer version, how it is used across the site, and lets the author report a problem with it, without leaving the editor or asking a developer.
 
+![Block Source open next to the canvas in Experience Workspace, showing a newer version of the tabs-activity block and its history](docs/images/overview.jpg)
+
 ## What authors can do
 
 - **See what matters at once.** The header names the block and the branch in use, shows **Used on N pages**, and has a **📷 Report** button. When a branch has a newer version, a callout offers **Preview on canvas** in one click.
@@ -13,6 +15,14 @@ Block Source is a panel for [Experience Workspace](https://da.live) (DA) that te
 - **Pages.** How many pages use the block and what share of the site that is, the list of pages (this page first) and which of the block's options are used.
 - **Issues.** Open GitHub issues about the block, and **Report a problem**: raise an issue against the branch the author is looking at (including a previewed version), with the page, the author's description and a screenshot of the block from the canvas, so developers get everything they need.
 - **About.** What the block does, what content it expects with a link to a sample page, who to ask, and how well it is documented.
+
+| Versions | Pages | Report a problem | About |
+| --- | --- | --- | --- |
+| ![Versions tab listing a branch with a newer version of the block](docs/images/versions.png) | ![Pages tab showing the 25 pages that use the block](docs/images/pages.png) | ![Report a problem form with a screenshot of the previewed block](docs/images/report.png) | ![About tab with the block's description, who to ask and documentation score](docs/images/about.png) |
+
+**Preview on canvas** swaps the newer version into the page for the author only. Here the `test-tabs-activity` branch gives the block a red background:
+
+![A newer version of the tabs-activity block previewed on the canvas, with a Revert banner](docs/images/preview.jpg)
 
 Block Source only reads the site's code. The one thing it writes is the issue an author chooses to raise.
 
