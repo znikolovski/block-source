@@ -3,6 +3,8 @@
 const crypto = require('node:crypto');
 const { memoryState, memoryFiles } = require('../lib/storage');
 const { buildDeps } = require('../lib/router');
+const { createLogger } = require('../lib/http');
+const { gitBlobSha } = require('../lib/crypto');
 
 const KEY = crypto.randomBytes(32).toString('base64');
 const NOW = Date.parse('2026-11-12T00:00:00Z');
@@ -180,7 +182,7 @@ function fakeFetch(fx, { log = [], overrides = [] } = {}) {
         const body = fx.raw[`${path}@${ref}`];
         if (body === undefined) return jsonRes(404, { message: 'Not Found' });
         if (accept.includes('raw')) return new Response(body, { status: 200 });
-        return jsonRes(200, { sha: require('../lib/crypto').gitBlobSha(Buffer.from(body)) });
+        return jsonRes(200, { sha: gitBlobSha(Buffer.from(body)) });
       }
       return jsonRes(404, { message: 'Not Found' });
     }
@@ -200,7 +202,6 @@ async function makeDeps({ fx = fixture(), fetchLog = [], overrides = [], config 
   };
   const state = memoryState(() => NOW);
   const files = memoryFiles();
-  const { createLogger } = require('../lib/http');
   const deps = await buildDeps({ ENCRYPTION_KEY: KEY, LOG_LEVEL: 'debug' }, {
     state,
     files,

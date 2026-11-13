@@ -131,7 +131,7 @@ function fetchMeta(name, { fresh = false } = {}) {
     : state.broker.get('/branches', fresh ? { ...q, fresh: '1' } : q, { fresh });
   meta[name] = p;
   meta[`${name}Data`] = undefined;
-  p.then((v) => v, () => null).then((v) => {
+  p.catch(() => null).then((v) => {
     if (meta[name] !== p) return;
     meta[`${name}Data`] = v;
     if (state.meta === meta) renderChrome();
@@ -302,9 +302,9 @@ function renderTabs() {
   const badge = (n, title, hot) => (n ? h('span', { class: `bs-badge${hot ? ' hot' : ''}`, title }, String(n)) : null);
   const tabs = [
     ['history', 'History'],
-    ['versions', 'Versions', badge(versions, `${plural(versions, 'newer version')}`, true)],
+    ['versions', 'Versions', badge(versions, plural(versions, 'newer version'), true)],
     ['pages', 'Pages'],
-    ['issues', 'Issues', badge(open, `${plural(open, 'open issue')}`)],
+    ['issues', 'Issues', badge(open, plural(open, 'open issue'))],
     ['about', 'About'],
   ];
   const focused = el.tabs.contains(document.activeElement) ? document.activeElement.id : null;
@@ -489,8 +489,7 @@ function deployedChip(dep) {
 }
 
 function relationNote(rel) {
-  if (!rel || rel.isDefault || rel.behindDefault === undefined) return null;
-  if (!rel.behindDefault) return null;
+  if (!rel || rel.isDefault || !rel.behindDefault) return null;
   return note('warn', `This page uses the branch ${rel.activeRef}, which is ${plural(rel.behindDefault, 'commit')} behind ${rel.defaultBranch}.`);
 }
 

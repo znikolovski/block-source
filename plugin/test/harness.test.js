@@ -6,6 +6,8 @@ installDom('<!DOCTYPE html><html><head></head><body><main><div><div class="cards
 
 const { run, allowedParent } = await import('../tools/block-source/dryrun.js');
 const agent = await import('../tools/block-source/agent.js');
+const { connectCanvas, watchCanvas, TAB_KEY } = await import('../tools/block-source/lib/canvas.js');
+const { startBridge } = await import('../tools/block-source/bridge.js');
 
 const mod = (body) => `data:text/javascript,${encodeURIComponent(`export default function decorate(block) { ${body} }`)}`;
 const HTML = '<div class="cards"><div><div><p>Hello world</p></div><div><a href="https://x">Link</a></div></div></div>';
@@ -76,8 +78,6 @@ test('agent applies a branch block to the canvas and reverts it', async () => {
 });
 
 test('canvas transport: plugin ⇄ bridge ⇄ agent, scoped to this tab and site', async () => {
-  const { connectCanvas, watchCanvas, TAB_KEY } = await import('../tools/block-source/lib/canvas.js');
-  const { startBridge } = await import('../tools/block-source/bridge.js');
   // In-memory BroadcastChannel: delivers to the other members of the same name, asynchronously.
   const members = new Set();
   const createChannel = () => {

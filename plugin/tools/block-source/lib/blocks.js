@@ -31,7 +31,7 @@ export function listBlocks(doc) {
       const instance = seen.get(name) || 0;
       seen.set(name, instance + 1);
       out.push({
-        el, name, variants: [...el.classList].slice(1), ordinal: counted ? ordinal - 1 : null, instance,
+        el, name, variants: [...el.classList].slice(1), ordinal: ordinal - 1, instance,
       });
     });
   });
