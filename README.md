@@ -4,16 +4,15 @@ Block Source is a panel for [Experience Workspace](https://da.live) (DA) that te
 
 ## What authors can do
 
-- **See the block at a glance.** A strip at the top shows how many pages use the block, how long since its code last changed, how many issues are open about it, and how many branches are changing it.
-- **History.** The changes made to the block, with who made them and when, and which version the page is using now.
-- **Versions.** Branches where developers have a newer version of the block. Before showing it, Block Source checks the new version against the author's own content and gives a clear answer:
-  - **Works with your content**: the author can preview it.
+- **See what matters at once.** The header names the block and the branch in use, shows **Used on N pages**, and has a **📷 Report** button. When a branch has a newer version, a callout offers **Preview on canvas** in one click.
+- **History.** A timeline of the block's changes: newer versions on other branches ("Coming next") first, then the commits on the page's branch, with who made them, when, and which one the page uses now.
+- **Versions.** Branches where developers have a newer version of the block. **Preview on canvas** first checks the new version against the author's own content:
+  - **Works with your content**: the block on the canvas is swapped for the new version, for this session only. Nothing is saved or published, and **Revert** or a reload puts it back.
   - **Does not fit**: with the reasons and who to ask.
   - **Could not confirm**: the author can still open the whole page on that branch.
-- **Preview on canvas.** Swap the block on the canvas for the newer version, for this session only. Nothing is saved or published, and **Revert** or a reload puts it back.
-- **Insights.** Which pages use the block, which of its options are used, the last change and who made it, open issues, work in progress, who to ask about the block, and how well it is documented.
-- **Report a problem.** Raise a GitHub issue about the block from the Insights tab. The issue records the branch the author is looking at (including a previewed version), the page, the author's description and a screenshot of the block from the canvas, so developers get everything they need.
-- **About.** What the block does and what content it expects, with a link to a sample page.
+- **Pages.** How many pages use the block and what share of the site that is, the list of pages (this page first) and which of the block's options are used.
+- **Issues.** Open GitHub issues about the block, and **Report a problem**: raise an issue against the branch the author is looking at (including a previewed version), with the page, the author's description and a screenshot of the block from the canvas, so developers get everything they need.
+- **About.** What the block does, what content it expects with a link to a sample page, who to ask, and how well it is documented.
 
 Block Source only reads the site's code. The one thing it writes is the issue an author chooses to raise.
 
@@ -70,8 +69,8 @@ Block Source reads the site's code with a GitHub token that a site administrator
      | --- | --- | --- |
      | Contents | Read-only | Required. Reading the block code, history and branches. |
      | Metadata | Read-only | Required (GitHub adds it automatically). |
-     | Pull requests | Read-only | Optional. Pull request links in Versions and Insights. |
-     | Issues | Read and write | Optional. Read shows open issues in Insights; write lets authors use **Report a problem**. |
+     | Pull requests | Read-only | Optional. Pull request links in History and Versions. |
+     | Issues | Read and write | Optional. Read shows open issues in the Issues tab; write lets authors use **Report a problem**. |
      | Commit statuses, Checks | Read-only | Optional. Build status of a branch. |
 
    - **Expiration**: as your security policy allows. Block Source shows the expiry date and warns before the token expires.
@@ -103,7 +102,7 @@ The script loads only when the page is shown inside a frame, such as the Experie
 
 ## Help authors understand your blocks (optional)
 
-The About tab and the documentation score in Insights read these files from each block's folder when they exist. Without them, Block Source describes the block from its code and content model.
+The About tab and its documentation score read these files from each block's folder when they exist. Without them, Block Source describes the block from its code and content model.
 
 - `blocks/{name}/README.md`: the first paragraph describes the block, and the first table describes its content. Add a `## Variants` list and a line like `Sample: /drafts/samples/cards` for the sample page.
 - Or a comment at the top of `blocks/{name}/{name}.js`:

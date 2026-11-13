@@ -10,7 +10,7 @@ import { combineVerdict, hashKey } from './lib/checks.js';
 import { runDryRun } from './lib/dryrun-runner.js';
 import { connectCanvas } from './lib/canvas.js';
 import {
-  relativeTime, shortAge, formatDate, personName, safeUrl, plural,
+  relativeTime, formatDate, personName, safeUrl, plural,
 } from './lib/format.js';
 
 const SDK_URL = 'https://da.live/nx/utils/sdk.js';
@@ -33,8 +33,13 @@ const state = {
   view: 'block',
   tab: 'history',
   checks: new Map(),
+  checkAreas: new Map(),
   previews: new Map(),
   canvas: undefined,
+  canvasMissing: false,
+  meta: null,
+  reportOpen: false,
+  autoPreview: null,
   gen: 0,
 };
 
@@ -101,18 +106,85 @@ function pageUrlOn(origin) {
 
 /* ---------- shell ---------- */
 
+const previewId = (sel) => `${sel.name}:${sel.instance}`;
+
 function renderShell() {
   el.header = h('header', { class: 'bs-header' });
   el.picker = h('div', { class: 'bs-picker' });
-  el.insights = h('section', { class: 'bs-glance', 'aria-label': 'Block at a glance' });
+  el.callout = h('section', { class: 'bs-callout-slot', 'aria-live': 'polite', 'aria-label': 'Newer versions' });
   el.tabs = h('nav', { class: 'bs-tabs', role: 'tablist', 'aria-label': 'Block Source' });
   el.panel = h('section', { class: 'bs-panel', role: 'tabpanel' });
   el.footer = h('footer', { class: 'bs-footer' });
-  clear(app, el.header, el.picker, el.insights, el.tabs, el.panel, el.footer);
+  clear(app, el.header, el.picker, el.callout, el.tabs, el.panel, el.footer);
+}
+
+function blockView() {
+  return Boolean(state.view === 'block' && state.selected && state.status && state.status.configured);
+}
+
+/** Loads one part of the block's shared data, and refreshes the header, callout and tabs when it arrives. */
+function fetchMeta(name, { fresh = false } = {}) {
+  const meta = state.meta;
+  const q = { block: state.selected.name, ref: state.ref };
+  const p = name === 'insights'
+    ? state.broker.get('/insights', q, { fresh })
+    : state.broker.get('/branches', fresh ? { ...q, fresh: '1' } : q, { fresh });
+  meta[name] = p;
+  meta[`${name}Data`] = undefined;
+  p.then((v) => v, () => null).then((v) => {
+    if (meta[name] !== p) return;
+    meta[`${name}Data`] = v;
+    if (state.meta === meta) renderChrome();
+  });
+  return p;
+}
+
+/** Insights and newer versions of the selected block, shared by the header, callout, tabs and tabs' content. */
+function blockMeta() {
+  const key = `${state.selected.name}:${state.ref}`;
+  if (state.meta && state.meta.key === key) return state.meta;
+  state.meta = { key };
+  fetchMeta('insights');
+  fetchMeta('branches');
+  return state.meta;
+}
+
+const newerBranches = () => (state.meta && state.meta.branchesData && state.meta.branchesData.branches) || [];
+
+function openTab(id, { report = false, autoPreview = null } = {}) {
+  state.view = 'block';
+  state.tab = id;
+  state.reportOpen = report;
+  state.autoPreview = autoPreview;
+  renderChrome();
+  renderPanel();
+}
+
+const openReport = () => openTab('issues', { report: true });
+
+function usedOnText(used) {
+  if (!used) return null;
+  return `${used.count}${used.complete ? '' : '+'}`;
+}
+
+function usagePill() {
+  const data = state.meta && state.meta.insightsData;
+  if (data === null) return null;
+  const used = data && data.usedOn;
+  let label = 'Pages not counted yet';
+  if (data === undefined) label = ['Used on ', h('b', {}, '…'), ' pages'];
+  else if (used) label = ['Used on ', h('b', {}, usedOnText(used)), used.count === 1 ? ' page' : ' pages'];
+  return h('button', {
+    class: 'bs-usage',
+    type: 'button',
+    title: used ? `Counted ${relativeTime(used.scannedAt)}. Show the pages.` : 'Show the pages that use this block',
+    onClick: () => openTab('pages'),
+  }, label, h('span', { 'aria-hidden': 'true' }, ' ›'));
 }
 
 function renderHeader() {
   const sel = state.selected;
+  const inBlock = blockView();
   const gear = state.status && state.status.isAdmin
     ? h('button', {
       class: 'bs-icon-btn',
@@ -127,39 +199,129 @@ function renderHeader() {
     }, '⚙')
     : null;
   const refNote = state.refSource === 'local-override' ? ' (local override)' : '';
+  const preview = inBlock ? state.previews.get(previewId(sel)) : null;
+  let title = h('strong', {}, 'Block Source');
+  if (state.view === 'settings') title = h('strong', {}, 'Settings');
+  else if (sel) title = [h('strong', {}, sel.name), ' ', sel.variants.map((v) => h('span', { class: 'bs-chip' }, v))];
+  const branch = preview
+    ? h('div', { class: 'bs-meta' }, h('span', { class: 'bs-ref pv', title: 'The version previewed on the canvas' }, preview.branch), ' previewed')
+    : h('div', { class: 'bs-meta' }, 'Branch ', h('span', { class: 'bs-ref' }, state.ref), refNote);
+  const report = inBlock ? h('button', {
+    class: 'bs-btn bs-report-btn',
+    type: 'button',
+    title: 'Report a problem with this block. A screenshot is added for you.',
+    onClick: openReport,
+  }, h('span', { 'aria-hidden': 'true' }, '📷'), ' Report') : null;
   clear(
     el.header,
-    h(
-      'div',
-      { class: 'bs-title' },
-      state.view === 'settings'
-        ? h('strong', {}, 'Settings')
-        : (sel ? [h('strong', {}, sel.name), ' ', sel.variants.map((v) => h('span', { class: 'bs-chip' }, v))] : h('strong', {}, 'Block Source')),
-      h('div', { class: 'bs-meta' }, 'Branch ', h('span', { class: 'bs-ref' }, state.ref), refNote),
-    ),
+    h('div', { class: 'bs-title' }, h('div', {}, title), branch, inBlock ? h('div', { class: 'bs-hd-usage' }, usagePill()) : null),
+    report,
     gear,
   );
 }
 
+/** The page on the branch, in a new tab. Used when the canvas cannot be reached. */
+function branchPageLink(b, { small = false, text = 'Open on this branch ↗' } = {}) {
+  const url = b.previewOrigin && safeUrl(pageUrlOn(b.previewOrigin));
+  if (!url) return null;
+  return h('a', {
+    class: `bs-btn preview${small ? ' small' : ''}`,
+    href: url,
+    target: '_blank',
+    rel: 'noopener noreferrer',
+    title: 'Opens this page on the branch in a new tab, with the last previewed content.',
+  }, text);
+}
+
+/** The main action for a newer version: preview it on the canvas, or open it on its branch when there is no canvas. */
+function previewAction(b, onPreview, { small = false, label = '▶ Preview on canvas' } = {}) {
+  if (!b.previewable) return null;
+  if (state.canvasMissing) return branchPageLink(b, { small });
+  return h('button', { class: `bs-btn preview${small ? ' small' : ''}`, type: 'button', onClick: onPreview }, label);
+}
+
+/** Above the tabs: what is previewed on the canvas, or the newest version not in use yet. */
+function renderCallout() {
+  const sel = state.selected;
+  if (!blockView() || state.tab === 'versions') {
+    clear(el.callout);
+    el.callout.hidden = true;
+    return;
+  }
+  const preview = state.previews.get(previewId(sel));
+  const branches = newerBranches();
+  let content = null;
+  if (preview) {
+    const b = branches.find((x) => x.name === preview.branch);
+    content = h(
+      'div',
+      { class: 'bs-callout previewing' },
+      h('p', { class: 'bs-kicker' }, h('span', { class: 'bs-dot pulse', 'aria-hidden': 'true' }), 'Previewing on the canvas'),
+      b && b.newest ? h('p', { class: 'bs-subject' }, b.newest.subject) : null,
+      h('p', { class: 'bs-meta' }, h('span', { class: 'bs-ref pv' }, preview.branch), ' · Only you see this, until you reload.'),
+      h(
+        'div',
+        { class: 'bs-row' },
+        h('button', { class: 'bs-btn small', type: 'button', onClick: () => revertBlock(sel) }, 'Revert'),
+        h('button', { class: 'bs-btn small', type: 'button', onClick: openReport }, h('span', { 'aria-hidden': 'true' }, '📷'), ' Report a problem with this version'),
+      ),
+    );
+  } else if (branches.length) {
+    const b = branches[0];
+    content = h(
+      'div',
+      { class: 'bs-callout newer' },
+      h('p', { class: 'bs-kicker' }, h('span', { class: 'bs-dot', 'aria-hidden': 'true' }), branches.length === 1 ? 'Newer version' : `${branches.length} newer versions`),
+      h('p', { class: 'bs-subject' }, b.newest ? b.newest.subject : b.name),
+      h('p', { class: 'bs-meta' }, h('span', { class: 'bs-ref' }, b.name), b.newest ? ` · ${personName(b.newest.author)}` : '', ` · ${relativeTime(b.headDate)}`),
+      h(
+        'div',
+        { class: 'bs-row' },
+        previewAction(b, () => openTab('versions', { autoPreview: b.name })),
+        branches.length > 1 || !b.previewable
+          ? h('button', { class: 'bs-btn small', type: 'button', onClick: () => openTab('versions') }, branches.length > 1 ? `See all ${branches.length}` : 'Details')
+          : null,
+      ),
+    );
+  }
+  clear(el.callout, content);
+  el.callout.hidden = !content;
+}
+
 function renderTabs() {
-  if (state.view !== 'block' || !state.selected) {
+  if (!blockView()) {
     clear(el.tabs);
     el.tabs.hidden = true;
     return;
   }
   el.tabs.hidden = false;
-  const tabs = [['history', 'History'], ['versions', 'Versions'], ['insights', 'Insights'], ['about', 'About']];
-  clear(el.tabs, tabs.map(([id, label]) => h('button', {
+  const meta = state.meta || {};
+  const versions = meta.branchesData ? meta.branchesData.branches.length : 0;
+  const issues = meta.insightsData && meta.insightsData.issues;
+  const open = issues && issues.state === 'ok' ? issues.open : 0;
+  const badge = (n, title, hot) => (n ? h('span', { class: `bs-badge${hot ? ' hot' : ''}`, title }, String(n)) : null);
+  const tabs = [
+    ['history', 'History'],
+    ['versions', 'Versions', badge(versions, `${plural(versions, 'newer version')}`, true)],
+    ['pages', 'Pages'],
+    ['issues', 'Issues', badge(open, `${plural(open, 'open issue')}`)],
+    ['about', 'About'],
+  ];
+  const focused = el.tabs.contains(document.activeElement) ? document.activeElement.id : null;
+  clear(el.tabs, tabs.map(([id, label, count]) => h('button', {
     type: 'button',
     role: 'tab',
     id: `tab-${id}`,
     'aria-selected': state.tab === id ? 'true' : 'false',
-    onClick: () => {
-      state.tab = id;
-      renderTabs();
-      renderPanel();
-    },
-  }, label)));
+    onClick: () => openTab(id),
+  }, h('span', { class: 'bs-tab-label' }, label), count)));
+  if (focused) document.getElementById(focused)?.focus();
+}
+
+function renderChrome() {
+  renderHeader();
+  renderCallout();
+  renderTabs();
 }
 
 function renderPicker() {
@@ -199,45 +361,56 @@ function renderPicker() {
   clear(el.picker, state.liveDocument ? h('p', { class: 'bs-muted bs-small' }, 'Select a block in the document, or choose one here.') : null, select);
 }
 
-async function renderFooter() {
-  const canvas = state.canvas;
-  if (canvas) {
-    try {
-      const live = await canvas.agent.list();
-      state.previews = new Map(live.map((p) => [p.id, p]));
-    } catch {
-      // canvas reloaded or gone
-    }
+/** Reads what is previewed from the canvas, which forgets everything when it reloads. Returns true when that changed. */
+async function syncPreviews() {
+  if (!state.canvas) return false;
+  const sig = () => [...state.previews.entries()].map(([k, p]) => `${k}@${p.branch}`).sort().join();
+  const before = sig();
+  try {
+    const live = await state.canvas.agent.list();
+    state.previews = new Map(live.map((p) => [p.id, p]));
+  } catch {
+    return false;
   }
-  if (!state.previews.size) {
+  return sig() !== before;
+}
+
+/** Previews of other blocks than the selected one; the callout covers the selected block. */
+async function renderFooter() {
+  if (await syncPreviews()) renderChrome();
+  const sel = blockView() ? state.selected : null;
+  const others = [...state.previews.entries()].filter(([id]) => !sel || id !== previewId(sel));
+  if (!others.length) {
     clear(el.footer);
     el.footer.hidden = true;
     return;
   }
   el.footer.hidden = false;
-  const branches = [...new Set([...state.previews.values()].map((p) => p.branch))].join(', ');
+  const branches = [...new Set(others.map(([, p]) => p.branch))].join(', ');
   clear(el.footer, h(
     'div',
     { class: 'bs-row' },
-    h('span', { class: 'bs-small' }, `${plural(state.previews.size, 'block')} previewed from ${branches}. Only you see this, until you reload.`),
+    h('span', { class: 'bs-small' }, `${plural(others.length, sel ? 'other block' : 'block')} previewed from ${branches}. Only you see this, until you reload.`),
     h('button', {
-      class: 'bs-btn',
+      class: 'bs-btn small',
       type: 'button',
       onClick: async () => {
-        await state.canvas?.agent.revertAll().catch(() => {});
-        state.previews.forEach((p) => state.broker.telemetry('preview-reverted', { block: p.block, branch: p.branch }));
-        state.previews.clear();
+        await Promise.all(others.map(([id]) => state.canvas?.agent.revert(id).catch(() => {})));
+        others.forEach(([id, p]) => {
+          state.previews.delete(id);
+          state.broker.telemetry('preview-reverted', { block: p.block, branch: p.branch });
+        });
         renderFooter();
-        if (state.tab === 'versions') renderPanel();
       },
-    }, 'Revert all'),
+    }, others.length === 1 ? 'Revert it' : 'Revert them'),
   ));
 }
 
 function render() {
+  if (blockView()) blockMeta();
   renderHeader();
   renderPicker();
-  renderGlance();
+  renderCallout();
   renderTabs();
   renderPanel();
   renderFooter();
@@ -267,13 +440,18 @@ async function renderPanel() {
   panel.setAttribute('aria-labelledby', `tab-${state.tab}`);
   clear(panel, loading());
   const views = {
-    history: renderHistory, versions: renderVersions, about: renderAbout, insights: renderInsights,
+    history: renderHistory, versions: renderVersions, pages: renderPages, issues: renderIssues, about: renderAbout,
   };
   try {
-    const content = await views[state.tab](sel, current);
+    const content = await (views[state.tab] || renderHistory)(sel, current);
     if (current()) clear(panel, content);
   } catch (e) {
-    if (current()) clear(panel, errorView(e, () => renderPanel()));
+    if (current()) {
+      clear(panel, errorView(e, () => {
+        state.meta = null;
+        render();
+      }));
+    }
   }
 }
 
@@ -285,11 +463,13 @@ function kindNote(resolved, block) {
   return note('', `${block} is not a code block in this repository. It may be default content, or a block provided by the platform.`);
 }
 
-function fileChips(files) {
+function filesText(files) {
   const labels = {
     js: 'Code', css: 'Styles', model: 'Content model', docs: 'Docs', other: 'Other',
   };
-  return Object.entries(files || {}).filter(([, list]) => list.length).map(([k, list]) => h('span', { class: 'bs-chip', title: list.map((f) => f.path).join('\n') }, labels[k] || k));
+  const parts = Object.entries(files || {}).filter(([, list]) => list.length);
+  if (!parts.length) return null;
+  return h('span', { title: parts.flatMap(([, list]) => list.map((f) => f.path)).join('\n') }, parts.map(([k]) => labels[k] || k).join(', '));
 }
 
 function deployedChip(dep) {
@@ -314,67 +494,117 @@ function relationNote(rel) {
   return note('warn', `This page uses the branch ${rel.activeRef}, which is ${plural(rel.behindDefault, 'commit')} behind ${rel.defaultBranch}.`);
 }
 
+const timeEl = (date) => h('time', { datetime: date, title: formatDate(date) }, relativeTime(date));
+
+/** A newer version in the History timeline. */
+function nextItem(sel, b) {
+  const preview = state.previews.get(previewId(sel));
+  const on = preview && preview.branch === b.name;
+  return h(
+    'li',
+    { class: 'next' },
+    h(
+      'div',
+      { class: `bs-next${on ? ' pv' : ''}` },
+      h('span', { class: 'bs-subject' }, b.newest ? b.newest.subject : b.name),
+      h('span', { class: 'bs-meta' }, h('span', { class: 'bs-ref' }, b.name), b.newest ? ` · ${personName(b.newest.author)}` : '', ' · ', timeEl(b.headDate)),
+      h(
+        'div',
+        { class: 'bs-row' },
+        on
+          ? h('span', { class: 'bs-chip pv' }, 'Previewing')
+          : previewAction(b, () => openTab('versions', { autoPreview: b.name }), { small: true, label: '▶ Preview' }) || link(b.compareUrl, 'Compare ↗', { class: 'bs-small' }),
+        b.pr ? link(b.pr.url, `PR #${b.pr.number}${b.pr.draft ? ' (draft)' : ''}`, { class: 'bs-small' }) : null,
+        b.pr === null ? h('span', { class: 'bs-meta' }, 'No pull request yet') : null,
+      ),
+    ),
+  );
+}
+
 async function renderHistory(sel) {
   const q = { block: sel.name, ref: state.ref };
-  const [hist, dep] = await Promise.all([
+  const [hist, dep, newer] = await Promise.all([
     state.broker.get('/history', q),
     state.broker.get('/deployed', q).catch(() => null),
+    blockMeta().branches.catch(() => null),
   ]);
   const kind = kindNote(hist.resolved, sel.name);
   if (kind) return kind;
-  if (!hist.commits.length) return note('', 'No commits changed this block on this branch.');
+  const next = newer ? newer.branches : [];
   return h(
     'div',
     { class: 'bs-form' },
     staleNote(hist),
     relationNote(hist.relation),
-    h('ol', { class: 'bs-list', 'aria-label': 'Commits that changed this block' }, hist.commits.map((c) => h(
-      'li',
-      { class: `bs-card${c.inUse ? ' inuse' : ''}` },
-      h('div', { class: 'bs-row' }, c.inUse ? h('span', { class: 'bs-chip inuse', title: 'The newest change on this branch is what the page uses.' }, 'In use') : null, c.inUse ? deployedChip(dep) : null),
-      h('span', { class: 'bs-subject' }, c.subject),
-      h('span', { class: 'bs-meta' }, personName(c.author), ' · ', h('time', { datetime: c.date, title: formatDate(c.date) }, relativeTime(c.date)), ' · ', link(c.url, c.shortSha, { class: 'bs-sha' })),
-      h('div', {}, fileChips(c.files)),
-    ))),
-    h('p', { class: 'bs-small' }, link(`${hist.repoUrl}/commits/${encodeURIComponent(hist.activeRef)}/blocks/${sel.name}`, 'All changes on GitHub')),
+    next.length ? [
+      h('p', { class: 'bs-tl-group next' }, 'Coming next · not in use yet'),
+      h('ol', { class: 'bs-tl', 'aria-label': 'Newer versions on other branches' }, next.map((b) => nextItem(sel, b))),
+    ] : null,
+    h('p', { class: 'bs-tl-group' }, `On ${hist.activeRef}`),
+    hist.commits.length
+      ? h('ol', { class: 'bs-tl', 'aria-label': 'Commits that changed this block' }, hist.commits.map((c) => h(
+        'li',
+        { class: c.inUse ? 'inuse' : '' },
+        c.inUse ? h('div', {}, h('span', { class: 'bs-chip inuse', title: 'The newest change on this branch is what the page uses.' }, 'In use on this page'), deployedChip(dep)) : null,
+        h('span', { class: 'bs-subject' }, c.subject),
+        h('span', { class: 'bs-meta' }, personName(c.author), ' · ', timeEl(c.date), ' · ', link(c.url, c.shortSha, { class: 'bs-sha' }), filesText(c.files) ? [' · ', filesText(c.files)] : null),
+      )))
+      : note('', 'No commits changed this block on this branch.'),
+    h('p', { class: 'bs-small' }, link(`${hist.repoUrl}/commits/${encodeURIComponent(hist.activeRef)}/blocks/${sel.name}`, 'All changes on GitHub ↗')),
   );
 }
 
-/* ---------- versions and safe apply ---------- */
+/* ---------- versions and safe preview ---------- */
 
 const checkKey = (sel, branch) => `${sel.name}:${sel.instance}:${branch}`;
+const STEPS = ['Checking the content model', 'Trying the new code with your content', 'Swapping it in on the canvas'];
+
+function updateCheck(sel, b, patch) {
+  const key = checkKey(sel, b.name);
+  const next = { ...(state.checks.get(key) || {}), ...patch };
+  state.checks.set(key, next);
+  const area = state.checkAreas.get(key);
+  if (area && area.isConnected) renderCheck(area, sel, b);
+  return next;
+}
 
 async function renderVersions(sel) {
-  const params = { block: sel.name, ref: state.ref };
-  if (state.freshBranches) params.fresh = '1';
-  state.freshBranches = false;
-  const data = await state.broker.get('/branches', params);
-  const again = h('p', { class: 'bs-small' }, h('button', {
-    class: 'bs-btn', type: 'button',
-    onclick: () => {
-      state.freshBranches = true;
+  const data = await blockMeta().branches;
+  const again = h('div', { class: 'bs-row bs-meta' }, h('button', {
+    class: 'bs-btn small',
+    type: 'button',
+    onClick: () => {
+      fetchMeta('branches', { fresh: true });
+      renderChrome();
       renderPanel();
     },
-  }, 'Check again'), ` Branches checked ${relativeTime(data.cachedAt)}.`);
-  const intro = h('p', { class: 'bs-muted bs-small' }, 'Branches with a newer version of this block. Check one to see if it works with your content, then preview it on the canvas. Nothing is saved or published.');
+  }, 'Check again'), data.cachedAt ? `Branches checked ${relativeTime(data.cachedAt)}.` : null);
+  const intro = h('p', { class: 'bs-muted bs-small' }, state.canvasMissing
+    ? 'Block Source cannot reach the canvas on this site, so a version opens on its branch in a new tab, with the last previewed content of this page.'
+    : 'Preview checks a version against your content first, then swaps it in on the canvas. Only you see it. Nothing is saved or published.');
   const notes = [staleNote(data)];
   if (data.truncated) notes.push(note('', `Only the most recent ${data.scanned} of ${data.candidates} branches were checked.`));
-  if (!data.branches.length) return h('div', { class: 'bs-form' }, notes, note('', 'No branch has a newer version of this block.'), again);
+  if (!data.branches.length) return h('div', { class: 'bs-form' }, notes, note('', 'No branch has a newer version of this block. You are seeing the latest.'), again);
+  const auto = state.autoPreview && data.branches.find((b) => b.name === state.autoPreview);
+  state.autoPreview = null;
+  if (auto && !state.canvasMissing) setTimeout(() => startPreview(sel, auto), 0);
   return h('div', { class: 'bs-form' }, intro, notes, h('ul', { class: 'bs-list' }, data.branches.map((b) => branchCard(sel, b))), again);
 }
 
 function branchCard(sel, b) {
-  const area = h('div', { class: 'bs-check' });
+  const area = h('div', { class: 'bs-check-area' });
+  state.checkAreas.set(checkKey(sel, b.name), area);
+  const preview = state.previews.get(previewId(sel));
   const card = h(
     'li',
-    { class: 'bs-card' },
+    { class: `bs-card${preview && preview.branch === b.name ? ' pv' : ''}` },
     h('div', { class: 'bs-row' }, h('strong', { class: 'bs-ref' }, b.name), b.pr ? link(b.pr.url, `#${b.pr.number} ${b.pr.title}`, { class: 'bs-small' }) : null),
     b.newest ? h('span', { class: 'bs-subject' }, b.newest.subject) : null,
     h(
       'span',
       { class: 'bs-meta' },
       b.newest ? `${personName(b.newest.author)} · ` : '',
-      h('time', { datetime: b.headDate, title: formatDate(b.headDate) }, relativeTime(b.headDate)),
+      timeEl(b.headDate),
       ` · ${plural(b.blockAheadBy || b.aheadBy, 'change')} to this block`,
     ),
     area,
@@ -383,43 +613,59 @@ function branchCard(sel, b) {
   return card;
 }
 
-function renderCheck(area, sel, b) {
-  const check = state.checks.get(checkKey(sel, b.name));
-  const actions = h('div', { class: 'bs-row' });
-  if (!b.previewable) {
-    clear(area, h('p', { class: 'bs-small bs-muted' }, `Cannot be previewed: ${b.previewReason}`), h('div', { class: 'bs-row' }, link(b.compareUrl, 'Compare on GitHub', { class: 'bs-small' })));
-    return;
-  }
-  if (!check) {
-    actions.append(h('button', { class: 'bs-btn primary', type: 'button', onClick: () => runCheck(area, sel, b) }, 'Check with my content'));
-    actions.append(link(b.compareUrl, 'Compare on GitHub', { class: 'bs-small' }));
-    clear(area, actions);
-    return;
-  }
-  if (check.running) {
-    clear(area, h('div', { class: 'bs-verdict running', role: 'status' }, check.step || 'Checking…'));
-    return;
-  }
-  if (check.error) {
-    clear(area, errorView(check.error, () => runCheck(area, sel, b)));
-    return;
-  }
-  clear(area, verdictView(area, sel, b, check));
+function stepsView(step) {
+  return h('ul', { class: 'bs-steps', role: 'status' }, STEPS.map((label, i) => {
+    let s = 'wait';
+    if (i < step) s = 'done';
+    else if (i === step) s = 'run';
+    return h('li', { class: `s-${s}` }, h('span', { 'aria-hidden': 'true' }, { done: '✓', run: '●', wait: '○' }[s]), label);
+  }));
 }
 
-async function runCheck(area, sel, b) {
-  const key = checkKey(sel, b.name);
-  const update = (patch) => {
-    state.checks.set(key, { ...(state.checks.get(key) || {}), ...patch });
-    if (area.isConnected) renderCheck(area, sel, b);
-  };
+function renderCheck(area, sel, b) {
+  const check = state.checks.get(checkKey(sel, b.name));
+  const preview = state.previews.get(previewId(sel));
+  const compare = link(b.compareUrl, 'Compare on GitHub ↗', { class: 'bs-small' });
+  area.closest('.bs-card')?.classList.toggle('pv', Boolean(preview && preview.branch === b.name));
+  if (!b.previewable) {
+    clear(area, h('p', { class: 'bs-small bs-muted' }, `Cannot be previewed: ${b.previewReason}`), h('div', { class: 'bs-row' }, compare));
+    return;
+  }
+  if (check && check.running) {
+    clear(area, stepsView(check.step || 0));
+    return;
+  }
+  if (check && check.error) {
+    clear(area, errorView(check.error, () => startPreview(sel, b)));
+    return;
+  }
+  if (check && check.final) {
+    clear(area, verdictView(sel, b, check));
+    return;
+  }
+  if (preview && preview.branch === b.name) {
+    clear(area, h(
+      'div',
+      { class: 'bs-verdict safe', role: 'status' },
+      h('strong', {}, 'Previewing on the canvas'),
+      h('div', { class: 'bs-row' }, h('button', { class: 'bs-btn small', type: 'button', onClick: () => revertBlock(sel) }, 'Revert'), compare),
+    ));
+    return;
+  }
+  clear(area, h('div', { class: 'bs-row' }, previewAction(b, () => startPreview(sel, b)), compare));
+}
+
+/** Checks the version against the author's content. Returns the check. */
+async function runCheck(sel, b) {
   const started = performance.now();
-  update({ running: true, step: 'Checking the content model…' });
+  updateCheck(sel, b, {
+    running: true, step: 0, error: null, final: null, applyError: null,
+  });
   try {
     const compat = await state.broker.get('/compat', { block: sel.name, ref: state.ref, branch: b.name });
     let dry = null;
     if (compat.verdict === 'needs-dry-run' && compat.previewable) {
-      update({ step: 'Trying the new code with your content…' });
+      updateCheck(sel, b, { step: 1 });
       const cacheKey = `block-source:dryrun:${await hashKey(sel.html, compat.headSha)}`;
       dry = readSession(cacheKey);
       if (!dry) {
@@ -439,12 +685,20 @@ async function runCheck(area, sel, b) {
     state.broker.telemetry('compat-checked', {
       block: sel.name, branch: b.name, verdict: final.verdict, durationMs: Math.round(performance.now() - started),
     });
-    update({
+    return updateCheck(sel, b, {
       running: false, compat, dry, final, error: null,
     });
   } catch (e) {
-    update({ running: false, error: e });
+    return updateCheck(sel, b, { running: false, error: e });
   }
+}
+
+/** One click: check the version against the content, then swap it in on the canvas if it fits. */
+async function startPreview(sel, b) {
+  let check = state.checks.get(checkKey(sel, b.name));
+  if (check && check.running) return;
+  if (!check || !check.final || check.error) check = await runCheck(sel, b);
+  if (check.final && check.final.verdict === 'safe') await applyPreview(sel, b);
 }
 
 function contactView(compat) {
@@ -461,34 +715,24 @@ function contactView(compat) {
   return parts;
 }
 
-function verdictView(area, sel, b, check) {
+function verdictView(sel, b, check) {
   const { final, compat } = check;
-  const previewId = `${sel.name}:${sel.instance}`;
-  const applied = state.previews.get(previewId);
+  const applied = state.previews.get(previewId(sel));
   const reasons = final.reasons.length ? h('ul', {}, final.reasons.map((r) => h('li', {}, r.message))) : null;
   const notes = (final.notes || []).map((n) => h('p', { class: 'bs-small' }, n.message));
-  const again = h('button', {
-    class: 'bs-btn',
-    type: 'button',
-    onClick: () => {
-      state.checks.delete(checkKey(sel, b.name));
-      runCheck(area, sel, b);
-    },
-  }, 'Check again');
-  const pageLink = link(pageUrlOn(compat.previewOrigin), 'Open the page on this branch', { class: 'bs-small' });
+  const again = h('button', { class: 'bs-btn small', type: 'button', onClick: () => runCheck(sel, b) }, 'Check again');
+  const pageLink = link(pageUrlOn(compat.previewOrigin), 'Open the page on this branch ↗', { class: 'bs-small' });
 
   if (final.verdict === 'safe') {
+    const on = applied && applied.branch === b.name;
     const actions = h('div', { class: 'bs-row' });
-    if (applied && applied.branch === b.name) {
-      actions.append(h('button', { class: 'bs-btn', type: 'button', onClick: () => revertPreview(area, sel, b) }, 'Revert'));
-    } else {
-      actions.append(h('button', { class: 'bs-btn primary', type: 'button', onClick: () => applyPreview(area, sel, b, check) }, 'Preview on canvas'));
-    }
-    actions.append(pageLink);
+    if (on) actions.append(h('button', { class: 'bs-btn small', type: 'button', onClick: () => revertBlock(sel) }, 'Revert'), pageLink);
+    else if (state.canvasMissing) actions.append(branchPageLink({ previewOrigin: compat.previewOrigin }, { small: true, text: 'Open the page on this branch ↗' }), h('button', { class: 'bs-btn small', type: 'button', onClick: () => applyPreview(sel, b) }, 'Try the canvas again'));
+    else actions.append(h('button', { class: 'bs-btn preview small', type: 'button', onClick: () => applyPreview(sel, b) }, '▶ Preview on canvas'), pageLink);
     return h(
       'div',
       { class: 'bs-verdict safe', role: 'status' },
-      h('strong', {}, applied && applied.branch === b.name ? 'Previewing on the canvas' : 'Works with your content'),
+      h('strong', {}, on ? 'Previewing on the canvas' : 'Works with your content'),
       reasons,
       notes,
       check.applyError ? note('error', check.applyError) : null,
@@ -502,7 +746,7 @@ function verdictView(area, sel, b, check) {
       h('strong', {}, 'This version does not fit your content'),
       reasons,
       contactView(compat),
-      h('div', { class: 'bs-row' }, again, link(b.compareUrl, 'Compare on GitHub', { class: 'bs-small' })),
+      h('div', { class: 'bs-row' }, again, link(b.compareUrl, 'Compare on GitHub ↗', { class: 'bs-small' })),
     );
   }
   return h(
@@ -522,17 +766,36 @@ async function getCanvas() {
   return state.canvas;
 }
 
-async function applyPreview(area, sel, b, check) {
-  const key = checkKey(sel, b.name);
-  const setError = (msg) => {
-    state.checks.set(key, { ...state.checks.get(key), applyError: msg });
-    renderCheck(area, sel, b);
-  };
+let probing = null;
+/** Finds out in the background whether the site loads the canvas agent, so preview buttons can fall back to links. */
+function probeCanvas() {
+  if (state.canvas || probing) return probing;
+  probing = getCanvas().then((canvas) => {
+    const missing = !canvas;
+    if (missing !== state.canvasMissing) {
+      state.canvasMissing = missing;
+      renderCallout();
+      if (blockView() && ['history', 'versions'].includes(state.tab)) renderPanel();
+    }
+    if (canvas) renderFooter();
+  }).finally(() => {
+    probing = null;
+  });
+  return probing;
+}
+
+async function applyPreview(sel, b) {
+  const check = state.checks.get(checkKey(sel, b.name));
+  updateCheck(sel, b, { running: true, step: 2, applyError: null });
+  const fail = (msg) => updateCheck(sel, b, { running: false, applyError: msg });
   const canvas = await getCanvas();
   if (!canvas) {
-    setError('The canvas did not answer. Wait for the page preview to finish loading and try again. If this keeps happening, the site does not load the Block Source agent yet (see the README); use “Open the page on this branch” meanwhile.');
+    state.canvasMissing = true;
+    renderCallout();
+    fail('Block Source cannot reach the canvas. Wait for the page preview to finish loading and try again. If this keeps happening, the site does not load the Block Source script yet, so open the page on this branch instead.');
     return;
   }
+  state.canvasMissing = false;
   const origin = check.compat.previewOrigin;
   const getModule = () => state.broker.get('/module', { block: sel.name, branch: b.name });
   const args = {
@@ -553,130 +816,35 @@ async function applyPreview(area, sel, b, check) {
       args.code = (await getModule()).code;
       await canvas.agent.apply(args);
     }
-    state.previews.set(`${sel.name}:${sel.instance}`, {
-      block: sel.name, instance: sel.instance, branch: b.name, sha: check.compat.headSha,
-    });
-    state.checks.set(key, { ...state.checks.get(key), applyError: null });
-    state.broker.telemetry('preview-applied', { block: sel.name, branch: b.name });
   } catch (e) {
-    setError(e.phase === 'find'
+    fail(e.phase === 'find'
       ? 'This block is not on the canvas yet. Preview the page first, then try again.'
       : `The preview did not work: ${e.message}`);
     return;
   }
-  renderPanel();
+  state.previews.set(previewId(sel), {
+    id: previewId(sel), block: sel.name, instance: sel.instance, branch: b.name, sha: check.compat.headSha,
+  });
+  state.broker.telemetry('preview-applied', { block: sel.name, branch: b.name });
+  updateCheck(sel, b, { running: false, applyError: null });
+  renderChrome();
   renderFooter();
 }
 
-async function revertPreview(area, sel, b) {
-  const id = `${sel.name}:${sel.instance}`;
+async function revertBlock(sel) {
+  const id = previewId(sel);
+  const p = state.previews.get(id);
   await state.canvas?.agent.revert(id).catch(() => {});
   state.previews.delete(id);
-  state.broker.telemetry('preview-reverted', { block: sel.name, branch: b.name });
-  renderCheck(area, sel, b);
+  if (p) state.broker.telemetry('preview-reverted', { block: sel.name, branch: p.branch });
+  renderChrome();
+  if (['versions', 'history'].includes(state.tab)) renderPanel();
   renderFooter();
 }
 
-/* ---------- about ---------- */
+/* ---------- shared section helpers ---------- */
 
-const generatedChip = (on) => (on ? h('span', { class: 'bs-chip gen', title: 'Written by Block Source from the code, because the developer did not document it.' }, 'Generated') : null);
-
-function shapeView(shape) {
-  if (!shape) return h('p', { class: 'bs-muted' }, 'Not documented.');
-  if (shape.type === 'table') {
-    return h(
-      'table',
-      { class: 'bs-table' },
-      h('thead', {}, h('tr', {}, shape.headers.map((c) => h('th', {}, c)))),
-      h('tbody', {}, shape.rows.map((r) => h('tr', {}, r.map((c) => h('td', {}, c))))),
-    );
-  }
-  if (shape.type === 'fields') {
-    return h(
-      'table',
-      { class: 'bs-table' },
-      h('thead', {}, h('tr', {}, h('th', {}, 'Field'), h('th', {}, 'Kind'), h('th', {}, 'Required'))),
-      h('tbody', {}, shape.fields.map((f) => h('tr', {}, h('td', {}, f.label), h('td', {}, f.type), h('td', {}, f.required ? 'Yes' : 'No')))),
-    );
-  }
-  return h('p', {}, shape.text, ' ', generatedChip(shape.source === 'generated'));
-}
-
-/** What the block is for and how to author it. Usage, options and ownership are in Insights. */
-async function renderAbout(sel) {
-  const s = await state.broker.get('/summary', { block: sel.name, ref: state.ref });
-  const kind = kindNote({ kind: s.kind, source: s.source }, sel.name);
-  if (kind) return kind;
-  return h(
-    'div',
-    { class: 'bs-form' },
-    h('div', {}, h('h3', {}, 'What it does'), h('p', {}, s.description || 'Not documented.', ' ', generatedChip(s.descriptionSource === 'generated'))),
-    h('div', {}, h('h3', {}, 'Content'), shapeView(s.contentShape)),
-    s.sample ? h('p', {}, link(s.sample.startsWith('/') ? `${state.pageOrigin}${s.sample}` : s.sample, 'See a sample page')) : null,
-  );
-}
-
-/* ---------- insights ---------- */
-
-const getInsights = (sel) => state.broker.get('/insights', { block: sel.name, ref: state.ref });
-
-function openTab(id) {
-  state.tab = id;
-  renderTabs();
-  renderPanel();
-}
-
-function usedOnText(used) {
-  if (!used) return null;
-  return `${used.count}${used.complete ? '' : '+'}`;
-}
-
-function issuesText(issues) {
-  if (!issues || issues.state !== 'ok') return '?';
-  return String(issues.open);
-}
-
-/** The at-a-glance strip above the tabs. Each figure opens the Insights tab. */
-async function renderGlance() {
-  const sel = state.selected;
-  if (state.view !== 'block' || !sel || !state.status || !state.status.configured) {
-    clear(el.insights);
-    el.insights.hidden = true;
-    return;
-  }
-  el.insights.hidden = false;
-  const key = `${sel.name}:${state.ref}`;
-  el.insights.dataset.key = key;
-  const tile = (value, label, title) => h('button', {
-    class: 'bs-stat', type: 'button', title, onClick: () => openTab('insights'),
-  }, h('span', { class: 'bs-stat-value' }, value), h('span', { class: 'bs-stat-label' }, label));
-  clear(el.insights, tile('…', 'pages'), tile('…', 'last change'), tile('…', 'open issues'), tile('…', 'in progress'));
-  let data;
-  try {
-    data = await getInsights(sel);
-  } catch {
-    if (el.insights.dataset.key === key) clear(el.insights);
-    el.insights.hidden = true;
-    return;
-  }
-  if (el.insights.dataset.key !== key) return;
-  if (data.kind !== 'code') {
-    clear(el.insights);
-    el.insights.hidden = true;
-    return;
-  }
-  const used = data.usedOn;
-  const work = data.work;
-  clear(
-    el.insights,
-    tile(usedOnText(used) || '–', used && used.count === 1 ? 'page uses it' : 'pages use it', used ? `Counted ${relativeTime(used.scannedAt)}` : 'Not counted yet'),
-    tile(data.lastChanged ? shortAge(data.lastChanged.date) : '–', 'since change', data.lastChanged ? `${formatDate(data.lastChanged.date)} by ${personName(data.lastChanged.author)}` : 'No changes found'),
-    tile(issuesText(data.issues), data.issues && data.issues.open === 1 ? 'open issue' : 'open issues', data.issues && data.issues.state !== 'ok' ? 'Issues could not be read' : 'Open GitHub issues about this block'),
-    tile(work ? String(work.branches.length) : '?', 'in progress', 'Branches with unreleased changes to this block'),
-  );
-}
-
-/** An Insights card: a header (title, optional count, optional action) and a body. */
+/** A section: a header (title, optional count, optional action) and a body. */
 function card(title, { count, action, id } = {}, ...body) {
   return h(
     'section',
@@ -695,69 +863,84 @@ const headLink = (href, text) => (safeUrl(href) ? h('a', {
   class: 'bs-head-link', href: safeUrl(href), target: '_blank', rel: 'noopener',
 }, text, h('span', { 'aria-hidden': 'true' }, ' ↗')) : null);
 
-const headBtn = (text, onClick) => h('button', { class: 'bs-head-link', type: 'button', onClick }, text);
-
 const empty = (text, tone = '') => h('p', { class: `bs-empty ${tone}`.trim() }, text);
 
-const PAGES_SHOWN = 6;
+/* ---------- pages ---------- */
+
+const samePage = (a, b) => a.replace(/\/index$/, '/') === b.replace(/\/index$/, '/');
 
 function pageList(pages) {
   const daEdit = (p) => `https://da.live/edit#/${state.org}/${state.site}${p === '/' ? '/index' : p}`;
-  const sorted = [...pages].sort((a, b) => (a === '/' ? -1 : b === '/' ? 1 : a.localeCompare(b)));
-  const row = (p) => h('li', {}, h('a', {
-    href: daEdit(p), target: '_blank', rel: 'noopener', title: `Open ${p} in DA`,
-  }, p === '/' ? h('span', {}, '/ ', h('span', { class: 'bs-muted' }, '(home)')) : p));
-  const list = h('ul', { class: 'bs-pages' }, sorted.slice(0, PAGES_SHOWN).map(row));
-  if (sorted.length <= PAGES_SHOWN) return list;
-  const more = h('button', {
-    class: 'bs-more',
-    type: 'button',
-    onClick: () => {
-      clear(list, sorted.map(row));
-      list.classList.add('all');
-      more.remove();
+  const here = (p) => samePage(p, state.path);
+  const sorted = [...pages].sort((a, b) => {
+    if (here(a) !== here(b)) return here(a) ? -1 : 1;
+    if (a === '/' || b === '/') return a === '/' ? -1 : 1;
+    return a.localeCompare(b);
+  });
+  const rows = sorted.map((p) => [p, h(
+    'li',
+    { class: here(p) ? 'here' : '' },
+    h('a', {
+      href: daEdit(p), target: '_blank', rel: 'noopener', title: `Open ${p} in DA`,
+    }, p === '/' ? h('span', {}, '/ ', h('span', { class: 'bs-muted' }, '(home)')) : p),
+    here(p) ? h('span', { class: 'bs-chip' }, 'This page') : h('span', { class: 'bs-open', 'aria-hidden': 'true' }, 'Open ↗'),
+  )]);
+  const none = h('p', { class: 'bs-empty', hidden: true }, 'No page matches.');
+  const filter = sorted.length > 8 ? h('input', {
+    class: 'bs-filter',
+    type: 'search',
+    placeholder: 'Filter pages',
+    'aria-label': 'Filter pages',
+    onInput: (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      rows.forEach(([p, li]) => { li.hidden = Boolean(q) && !p.toLowerCase().includes(q); });
+      none.hidden = rows.some(([, li]) => !li.hidden);
     },
-  }, `Show all ${sorted.length} pages`);
-  return h('div', {}, list, more);
+  }) : null;
+  return [filter, h('ul', { class: 'bs-pages' }, rows.map(([, li]) => li)), none];
 }
 
 function usedOnSection(used) {
   const admin = state.status && state.status.isAdmin;
-  const body = h('div', { class: 'bs-insight-body' });
+  const body = h('section', { class: 'bs-insight', 'aria-label': 'Pages that use this block' });
   const recount = async (e) => {
     e.currentTarget.disabled = true;
     clear(body, loading('Counting… this can take a minute.'));
     try {
       await state.broker.post('/admin/usage-scan');
       state.broker.invalidate();
-      renderGlance();
+      fetchMeta('insights', { fresh: true });
       renderPanel();
     } catch (err) {
       clear(body, errorView(err));
     }
   };
-  const action = admin ? headBtn(used ? 'Count again' : 'Count now', recount) : null;
+  const countBtn = (label) => (admin ? h('button', { class: 'bs-btn small', type: 'button', onClick: recount }, label) : null);
   if (!used) {
-    clear(body, empty(admin ? 'Pages have not been counted yet.' : 'Pages have not been counted yet. A site administrator can count them.'));
-    return card('Used on', { action, id: 'bs-in-used' }, body);
+    clear(body, empty(admin ? 'Pages have not been counted yet.' : 'Pages have not been counted yet. A site administrator can count them.'), h('div', { class: 'bs-row' }, countBtn('Count now')));
+    return body;
   }
   const share = used.total ? Math.round((used.count / used.total) * 100) : null;
+  let reach = 'No page uses this block. It may be safe to retire.';
+  if (used.count === 1) reach = 'A change to this block shows up on that page.';
+  else if (used.count > 1) reach = `A change to this block shows up on all ${used.count} of them.`;
   clear(
     body,
     h(
       'div',
       { class: 'bs-headline' },
-      h('strong', {}, `${used.count}${used.complete ? '' : '+'}`),
-      h('span', {}, used.count === 1 ? ' page' : ' pages', used.total ? h('span', { class: 'bs-muted' }, ` of ${used.total}`) : null),
-      share != null ? h('span', { class: 'bs-share' }, `${share}%`) : null,
+      h('strong', {}, usedOnText(used)),
+      h('span', {}, used.count === 1 ? 'page uses this block' : 'pages use this block'),
+      share != null ? h('span', { class: 'bs-share' }, `${share}% of ${used.total}`) : null,
     ),
     share != null ? h('div', {
       class: 'bs-bar', role: 'img', 'aria-label': `${share}% of pages`,
     }, h('span', { style: `width:${Math.max(share, used.count ? 2 : 0)}%` })) : null,
-    used.count ? pageList(used.pages) : empty('No page uses this block. It may be safe to retire.'),
-    h('p', { class: 'bs-meta' }, `Counted ${relativeTime(used.scannedAt)}`, used.count > used.pages.length ? ` · showing ${used.pages.length} of ${used.count}` : ''),
+    h('p', { class: 'bs-meta' }, reach),
+    used.count ? pageList(used.pages) : null,
+    h('div', { class: 'bs-row bs-meta' }, `Counted ${relativeTime(used.scannedAt)}`, used.count > used.pages.length ? ` · showing ${used.pages.length} of ${used.count}` : '', countBtn('Count again')),
   );
-  return card('Used on', { action, id: 'bs-in-used' }, body);
+  return body;
 }
 
 function variantsSection(data) {
@@ -785,40 +968,39 @@ function variantsSection(data) {
   );
 }
 
-function lastChangeSection(last) {
-  if (!last) return null;
-  return card(
-    'Last change',
-    { id: 'bs-in-last', action: headLink(last.url, 'Commit') },
-    h(
-      'div',
-      { class: 'bs-insight-body' },
-      h('p', {}, h('time', { datetime: last.date, title: formatDate(last.date) }, relativeTime(last.date)), h('span', { class: 'bs-muted' }, ' by '), personName(last.author)),
-      last.subject ? h('p', { class: 'bs-quote', title: last.subject }, last.shortSha ? h('span', { class: 'bs-sha' }, last.shortSha) : null, ' ', last.subject) : null,
-    ),
+async function renderPages(sel) {
+  const data = await blockMeta().insights;
+  return h(
+    'div',
+    { class: 'bs-insights' },
+    kindNote({ kind: data.kind, source: data.source }, sel.name),
+    usedOnSection(data.usedOn),
+    data.kind === 'code' ? variantsSection(data) : null,
   );
 }
 
+/* ---------- issues ---------- */
+
 /** The branch whose code the author sees for this block: a canvas preview's, else the page's. */
 function versionInView(sel) {
-  const preview = state.previews.get(`${sel.name}:${sel.instance}`);
+  const preview = state.previews.get(previewId(sel));
   return preview ? { branch: preview.branch, previewed: true } : { branch: state.ref, previewed: false };
 }
 
 function shotView(area, sel, shot) {
-  const retake = h('button', { class: 'bs-head-link', type: 'button', onClick: () => takeShot(area, sel, shot) }, 'Take again');
+  const retake = h('button', { class: 'bs-btn small', type: 'button', onClick: () => takeShot(area, sel, shot) }, 'Take again');
   if (shot.state === 'taking') {
-    clear(area, h('p', { class: 'bs-meta' }, 'Taking a screenshot of the block on the canvas…'));
+    clear(area, h('div', { class: 'bs-shot-frame' }, h('p', { class: 'bs-meta' }, 'Taking a screenshot of the block on the canvas…')));
   } else if (shot.state === 'none') {
-    clear(area, h('p', { class: 'bs-meta' }, shot.reason, ' '), retake);
+    clear(area, h('p', { class: 'bs-meta' }, shot.reason, ' '), h('div', { class: 'bs-row' }, retake));
   } else {
     const include = h('input', { type: 'checkbox', checked: shot.include, onChange: (e) => { shot.include = e.target.checked; } });
     clear(
       area,
-      h('img', {
+      h('div', { class: 'bs-shot-frame' }, h('img', {
         class: 'bs-shot-img', src: shot.dataUrl, alt: `Screenshot of the ${sel.name} block`,
-      }),
-      h('div', { class: 'bs-row' }, h('label', { class: 'bs-check' }, include, ' Attach this screenshot'), retake),
+      }), h('span', { class: 'bs-shot-tag' }, 'Screenshot of the block')),
+      h('div', { class: 'bs-row' }, h('label', { class: 'bs-check' }, include, ' Attach the screenshot'), retake),
       shot.fits ? null : h('p', { class: 'bs-meta' }, 'The block is very large, so the screenshot is low resolution.'),
     );
   }
@@ -829,7 +1011,7 @@ async function takeShot(area, sel, shot) {
   shotView(area, sel, shot);
   const canvas = await getCanvas();
   if (!canvas) {
-    Object.assign(shot, { state: 'none', reason: 'The canvas did not answer, so no screenshot will be attached.' });
+    Object.assign(shot, { state: 'none', reason: 'Block Source cannot reach the canvas, so no screenshot will be attached.' });
   } else {
     try {
       const r = await canvas.agent.capture({ block: sel.name, instance: sel.instance });
@@ -847,7 +1029,7 @@ async function takeShot(area, sel, shot) {
 }
 
 /** The form to raise a GitHub issue about the block, with a screenshot from the canvas. */
-function reportForm(body, sel, restore) {
+function reportForm(body, sel, close) {
   const { branch, previewed } = versionInView(sel);
   const shot = { state: 'taking' };
   const shotArea = h('div', { class: 'bs-shot' });
@@ -855,7 +1037,7 @@ function reportForm(body, sel, restore) {
     type: 'text', name: 'title', required: true, maxlength: '120', placeholder: 'For example: Tabs overlap the text on mobile',
   });
   const details = h('textarea', {
-    name: 'details', required: true, rows: '5', maxlength: '5000', placeholder: 'What did you do, what did you expect, and what happened instead?',
+    name: 'details', required: true, rows: '4', maxlength: '5000', placeholder: 'What did you do, what did you expect, and what happened instead?',
   });
   const status = h('div', {});
   const submit = h('button', { class: 'bs-btn primary', type: 'submit' }, 'Raise issue');
@@ -880,11 +1062,11 @@ function reportForm(body, sel, restore) {
             screenshot: shot.state === 'ready' && shot.include ? shot.dataUrl : null,
           });
           state.broker.invalidate();
-          renderGlance();
+          if (state.selected === sel) fetchMeta('insights', { fresh: true });
           clear(
             body,
             note('ok', h('p', {}, 'Issue ', link(r.url, `#${r.number}`), ' raised in ', repo, '.', r.screenshot ? ' The screenshot is attached.' : '')),
-            h('div', { class: 'bs-row' }, h('button', { class: 'bs-btn', type: 'button', onClick: () => renderPanel() }, 'Done')),
+            h('div', { class: 'bs-row' }, h('button', { class: 'bs-btn', type: 'button', onClick: close }, 'Done')),
           );
         } catch (err) {
           submit.disabled = false;
@@ -893,21 +1075,32 @@ function reportForm(body, sel, restore) {
         }
       },
     },
-    h('p', { class: 'bs-meta' }, 'About ', h('span', { class: 'bs-ref' }, sel.name), ' on branch ', h('span', { class: 'bs-ref' }, branch), previewed ? ' (previewed on the canvas)' : '', ` · page ${state.path}`),
-    h('label', {}, 'Title', title),
-    h('label', {}, 'What is wrong?', details),
+    h('header', { class: 'bs-insight-head' }, h('h3', {}, 'Report a problem'), h('button', { class: 'bs-head-link', type: 'button', onClick: close }, 'Cancel')),
+    h('p', { class: 'bs-ctx' }, 'About ', h('strong', {}, sel.name), ' on branch ', h('span', { class: `bs-ref${previewed ? ' pv' : ''}` }, branch), previewed ? ' (previewed on the canvas)' : '', ` · page ${state.path}`),
     shotArea,
+    h('label', {}, 'Title', title),
+    h('label', {}, 'What happened?', details),
     h('p', { class: 'bs-meta' }, `The issue is opened in ${repo} by the site's GitHub account, with your name as the reporter. Anyone who can see the issue can open the screenshot.`),
     status,
-    h('div', { class: 'bs-row' }, submit, h('button', { class: 'bs-btn', type: 'button', onClick: restore }, 'Cancel')),
+    h('div', { class: 'bs-row' }, submit),
   );
   clear(body, form);
-  title.focus();
+  setTimeout(() => title.focus(), 0);
   takeShot(shotArea, sel, shot);
 }
 
-function issuesSection(issues, sel) {
-  if (!issues) return null;
+function reportCta(open) {
+  return h(
+    'div',
+    { class: 'bs-report-cta' },
+    h('span', { class: 'bs-cam', 'aria-hidden': 'true' }, '📷'),
+    h('div', {}, h('strong', {}, 'Something wrong with this block?'), h('p', { class: 'bs-meta' }, 'Raise an issue for the developers. A screenshot of the block is added for you.')),
+    h('button', { class: 'bs-btn primary', type: 'button', onClick: open }, 'Report a problem'),
+  );
+}
+
+function issuesSection(issues) {
+  if (!issues) return card('Open issues', { id: 'bs-in-issues' }, empty('Issues could not be read right now.'));
   const ok = issues.state === 'ok';
   let body;
   if (issues.state === 'no-permission') {
@@ -926,28 +1119,47 @@ function issuesSection(issues, sel) {
       h('span', { class: 'bs-meta' }, `#${i.number} · updated ${relativeTime(i.updatedAt)}`, i.match === 'label' ? null : ' · mentions the block'),
     )));
   }
-  const wrap = h('div', { class: 'bs-insight-body' });
-  const show = () => clear(wrap, body, h('div', { class: 'bs-row' }, h('button', {
-    class: 'bs-btn', type: 'button', onClick: () => reportForm(wrap, sel, show),
-  }, 'Report a problem')));
-  show();
-  return card('Open issues', { count: ok ? issues.open : null, id: 'bs-in-issues', action: headLink(issues.searchUrl, 'GitHub') }, wrap);
+  return card('Open issues', { count: ok ? issues.open : null, id: 'bs-in-issues', action: headLink(issues.searchUrl, 'GitHub') }, body);
 }
 
-function workSection(work) {
-  if (!work) return null;
-  const action = work.branches.length ? headBtn('Check in Versions', () => openTab('versions')) : null;
-  return card(
-    'In progress',
-    { count: work.branches.length || null, id: 'bs-in-work', action },
-    work.branches.length ? h('ul', { class: 'bs-rows' }, work.branches.map((b) => h(
-      'li',
-      {},
-      h('span', { class: 'bs-row-title' }, b.subject || b.name),
-      h('span', { class: 'bs-meta' }, h('span', { class: 'bs-ref' }, b.name), ` · ${relativeTime(b.headDate)}`, b.pr ? [' · ', link(b.pr.url, `PR #${b.pr.number}${b.pr.draft ? ' (draft)' : ''}`)] : ' · no pull request yet'),
-    ))) : empty('No branch is changing this block.'),
-    work.truncated ? h('p', { class: 'bs-meta' }, 'Only the most recently active branches were checked.') : null,
-  );
+async function renderIssues(sel) {
+  const data = await blockMeta().insights.catch(() => null);
+  const top = h('div', {});
+  const showCta = () => {
+    state.reportOpen = false;
+    clear(top, reportCta(() => {
+      state.reportOpen = true;
+      reportForm(top, sel, () => renderPanel());
+    }));
+  };
+  if (state.reportOpen) reportForm(top, sel, () => { state.reportOpen = false; renderPanel(); });
+  else showCta();
+  return h('div', { class: 'bs-insights' }, top, issuesSection(data && data.issues));
+}
+
+/* ---------- about ---------- */
+
+const generatedChip = (on) => (on ? h('span', { class: 'bs-chip gen', title: 'Written by Block Source from the code, because the developer did not document it.' }, 'Generated') : null);
+
+function shapeView(shape) {
+  if (!shape) return h('p', { class: 'bs-muted' }, 'Not documented.');
+  if (shape.type === 'table') {
+    return h(
+      'table',
+      { class: 'bs-table' },
+      h('thead', {}, h('tr', {}, shape.headers.map((c) => h('th', {}, c)))),
+      h('tbody', {}, shape.rows.map((r) => h('tr', {}, r.map((c) => h('td', {}, c))))),
+    );
+  }
+  if (shape.type === 'fields') {
+    return h(
+      'table',
+      { class: 'bs-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Field'), h('th', {}, 'Kind'), h('th', {}, 'Required'))),
+      h('tbody', {}, shape.fields.map((f) => h('tr', {}, h('td', {}, f.label), h('td', {}, f.type), h('td', {}, f.required ? 'Yes' : 'No')))),
+    );
+  }
+  return h('p', {}, shape.text, ' ', generatedChip(shape.source === 'generated'));
 }
 
 function initials(name) {
@@ -999,20 +1211,21 @@ function docsSection(docs) {
   );
 }
 
-async function renderInsights(sel) {
-  const data = await getInsights(sel);
-  const kind = kindNote({ kind: data.kind, source: data.source }, sel.name);
-  if (kind) return h('div', { class: 'bs-insights' }, kind, usedOnSection(data.usedOn));
+/** What the block is for, how to author it, and who to ask. Usage is in Pages, issues in Issues. */
+async function renderAbout(sel) {
+  const [s, data] = await Promise.all([
+    state.broker.get('/summary', { block: sel.name, ref: state.ref }),
+    blockMeta().insights.catch(() => null),
+  ]);
+  const kind = kindNote({ kind: s.kind, source: s.source }, sel.name);
+  if (kind) return kind;
   return h(
     'div',
     { class: 'bs-insights' },
-    usedOnSection(data.usedOn),
-    variantsSection(data),
-    lastChangeSection(data.lastChanged),
-    issuesSection(data.issues, sel),
-    workSection(data.work),
-    ownersSection(data.owners),
-    docsSection(data.docs),
+    card('What it does', { id: 'bs-ab-what' }, h('p', {}, s.description || 'Not documented.', ' ', generatedChip(s.descriptionSource === 'generated'))),
+    card('Content', { id: 'bs-ab-content' }, shapeView(s.contentShape), s.sample ? h('p', { class: 'bs-small' }, link(s.sample.startsWith('/') ? `${state.pageOrigin}${s.sample}` : s.sample, 'See a sample page ↗')) : null),
+    data ? ownersSection(data.owners) : null,
+    data ? docsSection(data.docs) : null,
   );
 }
 
@@ -1226,7 +1439,10 @@ function selectBlock(sel) {
   state.selected = sel;
   if (same) return;
   state.view = 'block';
+  state.reportOpen = false;
+  state.autoPreview = null;
   render();
+  probeCanvas();
 }
 
 let liveTimer;
@@ -1336,6 +1552,7 @@ async function init() {
   renderShell();
   if (!state.status.configured && state.status.isAdmin) state.view = 'settings';
   render();
+  probeCanvas();
   state.broker.telemetry('panel-opened');
 
   if (capabilities.liveDocument === 1 && typeof actions.subscribeLiveDocument === 'function') {
