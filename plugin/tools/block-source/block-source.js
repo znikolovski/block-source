@@ -8,7 +8,7 @@ import {
 import { createBroker, validBrokerUrl } from './lib/broker.js';
 import { combineVerdict, hashKey } from './lib/checks.js';
 import { runDryRun } from './lib/dryrun-runner.js';
-import { connectCanvas } from './lib/canvas.js';
+import { connectCanvas, watchCanvas } from './lib/canvas.js';
 import {
   relativeTime, formatDate, personName, safeUrl, plural,
 } from './lib/format.js';
@@ -760,24 +760,50 @@ function verdictView(sel, b, check) {
   );
 }
 
-async function getCanvas() {
+async function getCanvas({ helloTimeout } = {}) {
   // Not cached when missing: the canvas may still be loading, or may have been reloaded.
-  if (!state.canvas) state.canvas = await connectCanvas({ org: state.org, site: state.site }).catch(() => null);
+  if (!state.canvas) {
+    state.canvas = await connectCanvas({ org: state.org, site: state.site }, helloTimeout ? { helloTimeout } : {}).catch(() => null);
+  }
   return state.canvas;
 }
 
+// The panel often opens before the canvas has loaded the agent, so one silent probe proves nothing.
+// Preview buttons fall back to links only after the canvas has stayed silent for a while, and the
+// panel keeps listening: the agent announces itself when it starts, and probes keep retrying.
+const PROBE_TIMEOUT = 3000;
+const PROBE_RETRIES_MS = [2000, 4000, 8000, 15000];
+const MISSING_AFTER = 2;
 let probing = null;
+let probeTimer = null;
+let probeFailures = 0;
+let stopWatching = null;
+
+function setCanvasMissing(missing) {
+  if (missing === state.canvasMissing) return;
+  state.canvasMissing = missing;
+  renderCallout();
+  if (blockView() && ['history', 'versions'].includes(state.tab)) renderPanel();
+}
+
 /** Finds out in the background whether the site loads the canvas agent, so preview buttons can fall back to links. */
 function probeCanvas() {
-  if (state.canvas || probing) return probing;
-  probing = getCanvas().then((canvas) => {
-    const missing = !canvas;
-    if (missing !== state.canvasMissing) {
-      state.canvasMissing = missing;
-      renderCallout();
-      if (blockView() && ['history', 'versions'].includes(state.tab)) renderPanel();
+  if (!stopWatching) stopWatching = watchCanvas({ org: state.org, site: state.site }, () => probeCanvas());
+  if (state.canvas) return Promise.resolve(state.canvas);
+  if (probing) return probing;
+  clearTimeout(probeTimer);
+  probing = getCanvas({ helloTimeout: PROBE_TIMEOUT }).then((canvas) => {
+    if (canvas) {
+      probeFailures = 0;
+      setCanvasMissing(false);
+      renderFooter();
+      return canvas;
     }
-    if (canvas) renderFooter();
+    probeFailures += 1;
+    if (probeFailures >= MISSING_AFTER) setCanvasMissing(true);
+    const wait = PROBE_RETRIES_MS[Math.min(probeFailures - 1, PROBE_RETRIES_MS.length - 1)];
+    probeTimer = setTimeout(() => probeCanvas(), wait);
+    return null;
   }).finally(() => {
     probing = null;
   });

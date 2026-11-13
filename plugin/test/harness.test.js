@@ -76,7 +76,7 @@ test('agent applies a branch block to the canvas and reverts it', async () => {
 });
 
 test('canvas transport: plugin ⇄ bridge ⇄ agent, scoped to this tab and site', async () => {
-  const { connectCanvas, TAB_KEY } = await import('../tools/block-source/lib/canvas.js');
+  const { connectCanvas, watchCanvas, TAB_KEY } = await import('../tools/block-source/lib/canvas.js');
   const { startBridge } = await import('../tools/block-source/bridge.js');
   // In-memory BroadcastChannel: delivers to the other members of the same name, asynchronously.
   const members = new Set();
@@ -102,7 +102,9 @@ test('canvas transport: plugin ⇄ bridge ⇄ agent, scoped to this tab and site
       addEventListener: (_, fn) => listeners.push(fn),
       parent: {
         postMessage: async (data) => {
-          const reply = await agent.handle(data, { org: 'acme', site });
+          const reply = data.type === 'block-source:bridge-ready'
+            ? agent.readyAnnouncement({ org: 'acme', site })
+            : await agent.handle(data, { org: 'acme', site });
           if (reply) listeners.forEach((fn) => fn({ source: bridgeWin.parent, origin: `https://main--${site}--acme.preview.da.live`, data: reply }));
         },
       },
@@ -112,11 +114,18 @@ test('canvas transport: plugin ⇄ bridge ⇄ agent, scoped to this tab and site
 
   document.querySelector('main').innerHTML = '<div class="cards block" data-block-name="cards"><div><div>Old</div></div></div>';
   const pluginStorage = storage();
+  let announced = 0;
+  const stopWatching = watchCanvas({ org: 'acme', site: 'site' }, () => { announced += 1; }, { storage: pluginStorage, createChannel });
   const other = canvasIn('another-tab', 'site');
-  const wrongSite = canvasIn(null, 'other');
+  const wrongSite = canvasIn(pluginStorage.getItem(TAB_KEY), 'other');
   assert.equal(await connectCanvas({ org: 'acme', site: 'site' }, { storage: pluginStorage, createChannel, helloTimeout: 100 }), null, 'a canvas in another tab never answers');
+  assert.equal(announced, 0, 'agents of another tab or site are not announced');
 
+  // The canvas loads after the panel opened: its agent announces itself, so the panel need not wait.
   const mine = canvasIn(pluginStorage.getItem(TAB_KEY), 'site');
+  await new Promise((r) => { setTimeout(r, 20); });
+  assert.equal(announced, 1, 'the agent announces itself once it starts');
+  stopWatching();
   const canvas = await connectCanvas({ org: 'acme', site: 'site' }, { storage: pluginStorage, createChannel, helloTimeout: 500 });
   assert.equal(canvas.mode, 'channel');
   await canvas.agent.apply({

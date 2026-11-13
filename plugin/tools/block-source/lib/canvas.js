@@ -50,6 +50,29 @@ function channelClient({ org, site, tab }, createChannel) {
   return { call, close: () => channel.close() };
 }
 
+/**
+ * Calls `onReady` whenever an agent in this tab announces it has started for this site, for
+ * example when the canvas finishes loading after the panel, or reloads. Returns a stop function.
+ */
+export function watchCanvas({ org, site }, onReady, {
+  storage = window.sessionStorage,
+  createChannel = (name) => new BroadcastChannel(name),
+} = {}) {
+  let tab;
+  try {
+    tab = tabId(storage);
+  } catch {
+    return () => {};
+  }
+  const channel = createChannel(CHANNEL);
+  channel.onmessage = ({ data }) => {
+    if (!data || data.type !== 'block-source:agent-reply' || data.event !== 'ready') return;
+    if (data.tab !== tab || data.org !== org || data.site !== site) return;
+    onReady();
+  };
+  return () => channel.close();
+}
+
 export async function connectCanvas({ org, site }, {
   storage = window.sessionStorage,
   createChannel = (name) => new BroadcastChannel(name),

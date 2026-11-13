@@ -260,6 +260,13 @@ export async function handle(msg, own = canvasSite()) {
   }
 }
 
+/** Tells a panel that is already open that the agent has started, so it does not wait for its next retry. */
+export function readyAnnouncement(own = canvasSite()) {
+  return own ? {
+    type: 'block-source:agent-reply', id: 'ready', event: 'ready', ok: true, org: own.org, site: own.site,
+  } : null;
+}
+
 function joinChannel() {
   const channel = new BroadcastChannel(CHANNEL);
   channel.onmessage = async ({ data }) => {
@@ -273,6 +280,14 @@ function joinChannel() {
     const reply = await handle(data);
     if (reply) channel.postMessage(reply);
   };
+  let tab = null;
+  try {
+    tab = window.sessionStorage.getItem(TAB_KEY);
+  } catch {
+    // storage blocked
+  }
+  const ready = readyAnnouncement();
+  if (ready && tab) channel.postMessage({ ...ready, tab });
 }
 
 function openBridge() {
@@ -284,6 +299,11 @@ function openBridge() {
   frame.style.cssText = 'position:absolute;width:0;height:0;border:0;visibility:hidden';
   window.addEventListener('message', async (e) => {
     if (e.source !== frame.contentWindow || e.origin !== OWN_URL.origin) return;
+    if (e.data && e.data.type === 'block-source:bridge-ready') {
+      const ready = readyAnnouncement();
+      if (ready) frame.contentWindow.postMessage(ready, OWN_URL.origin);
+      return;
+    }
     const reply = await handle(e.data);
     if (reply) frame.contentWindow.postMessage(reply, OWN_URL.origin);
   });
